@@ -1,0 +1,24 @@
+services:
+  teleagent:
+    build: .
+    env_file: .env
+    environment:
+      # Ollama runs on the host, not in this container.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      CONVERSATIONS_FILE: /app/data/conversations.json
+      TZ: Europe/Germany
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./skills:/app/skills:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped

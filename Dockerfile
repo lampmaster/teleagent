@@ -6,7 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npx tsc
 
 FROM node:22-slim AS runtime
 # curl and procps (ps) are what the agent's exec tool reaches for; see skills/start-day.md.
@@ -20,7 +20,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY skills ./skills
-RUN mkdir -p /app/data && chown node:node /app/data
+# /app/data holds the bot's history, metrics and flags; /app/benchmark-data keeps
+# the benchmark's own copies so a benchmark can never touch real conversations.
+RUN mkdir -p /app/data /app/benchmark-data && chown node:node /app/data /app/benchmark-data
 
 USER node
+# Overridden by the dashboard and benchmark services, which share this image.
 CMD ["node", "dist/main.js"]

@@ -1,14 +1,22 @@
 import type {
+  GenerateOptions,
   LLMProvider,
   LLMResponse,
+  LLMUsage,
   Message,
   ToolCall,
   ToolDefinition,
 } from "./LLMProvider.js";
 
+export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+
 export interface OllamaProviderOptions {
   baseUrl: string;
   model: string;
+  /** Sampling options passed through to Ollama, e.g. temperature and seed. */
+  generationOptions?: Record<string, unknown>;
+  /** Guards against a hung generation blocking the loop forever. */
+  requestTimeoutMs?: number;
 }
 
 interface OllamaToolCall {
@@ -21,27 +29,41 @@ interface OllamaToolCall {
 interface OllamaMessage {
   role: string;
   content?: string;
+  thinking?: string;
   tool_calls?: OllamaToolCall[];
   tool_name?: string;
 }
 
 interface OllamaChatResponse {
+  model?: string;
   message?: OllamaMessage;
   error?: string;
+  prompt_eval_count?: number;
+  prompt_eval_cached_count?: number;
+  eval_count?: number;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_duration?: number;
+  eval_duration?: number;
 }
 
 export class OllamaProvider implements LLMProvider {
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly generationOptions?: Record<string, unknown>;
+  private readonly requestTimeoutMs: number;
 
   constructor(options: OllamaProviderOptions) {
     this.baseUrl = options.baseUrl;
     this.model = options.model;
+    this.generationOptions = options.generationOptions;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async generate(
     messages: Message[],
     tools: ToolDefinition[],
+    options: GenerateOptions = {},
   ): Promise<LLMResponse> {
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
@@ -50,8 +72,14 @@ export class OllamaProvider implements LLMProvider {
         model: this.model,
         messages: messages.map(toOllamaMessage),
         tools: tools.length > 0 ? tools.map(toOllamaTool) : undefined,
+        think: options.think,
+        options:
+          this.generationOptions || options.sampling
+            ? { ...this.generationOptions, ...options.sampling }
+            : undefined,
         stream: false,
       }),
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
 
     if (!response.ok) {
@@ -73,9 +101,33 @@ export class OllamaProvider implements LLMProvider {
 
     return {
       content: data.message.content ?? "",
+      thinking: data.message.thinking ?? null,
       toolCalls: parseToolCalls(data.message.tool_calls),
+      usage: toUsage(data, this.model),
     };
   }
+}
+
+function toUsage(data: OllamaChatResponse, fallbackModel: string): LLMUsage {
+  return {
+    model: data.model ?? fallbackModel,
+    inputTokens: numberOrNull(data.prompt_eval_count),
+    outputTokens: numberOrNull(data.eval_count),
+    cachedTokens: numberOrNull(data.prompt_eval_cached_count),
+    loadDurationMs: nanosToMs(data.load_duration),
+    promptEvalDurationMs: nanosToMs(data.prompt_eval_duration),
+    evalDurationMs: nanosToMs(data.eval_duration),
+    totalDurationMs: nanosToMs(data.total_duration),
+  };
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nanosToMs(value: unknown): number | null {
+  const nanos = numberOrNull(value);
+  return nanos === null ? null : Math.round(nanos / 1_000_000);
 }
 
 function toOllamaMessage(message: Message): OllamaMessage {

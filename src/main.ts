@@ -1,11 +1,14 @@
 import { Bot } from "grammy";
 import { Agent } from "./agent/index.js";
-import { config } from "./config.js";
+import { config, telegramConfig } from "./config.js";
 import { OllamaProvider, type LLMProvider } from "./llm/index.js";
 import {
   JsonConversationStore,
   type ConversationStore,
 } from "./memory/index.js";
+import { MetricsStore } from "./metrics/index.js";
+import { CompactionStateStore } from "./optimizations/contextCompaction.js";
+import { FlagStore } from "./optimizations/flags.js";
 import { SkillLoader } from "./skills/SkillLoader.js";
 import { ExecTool, LoadSkillTool, type Tool } from "./tools/index.js";
 
@@ -20,6 +23,9 @@ const conversationStore: ConversationStore = new JsonConversationStore(
   config.conversationsFile,
 );
 
+const metricsStore = openMetricsStore();
+const flagStore = new FlagStore(config.featureFlagsFile);
+
 const skillLoader = new SkillLoader(config.skillsDirectory);
 const skills = await skillLoader.list();
 
@@ -30,13 +36,20 @@ const agent = new Agent({
   conversationStore,
   tools,
   skills,
+  maxIterations: config.maxIterations,
   debug: config.debug,
+  metricsStore,
+  flags: flagStore,
+  pricing: config.pricing,
+  agentId: "telegram",
+  compactionStore: new CompactionStateStore(config.compactionStateFile),
+  compactionThresholds: config.compactionThresholds,
 });
 
-const bot = new Bot(config.telegramBotToken);
+const bot = new Bot(telegramConfig.botToken());
 
 bot.use(async (ctx, next) => {
-  if (ctx.from?.id === config.allowedUserId) {
+  if (ctx.from?.id === telegramConfig.allowedUserId) {
     await next();
   }
 });
@@ -48,8 +61,8 @@ bot.command("new", async (ctx) => {
 
 bot.on("message:text", async (ctx) => {
   try {
-    const response = await agent.run(String(ctx.chat.id), ctx.message.text);
-    await ctx.reply(response.slice(0, TELEGRAM_MESSAGE_LIMIT));
+    const result = await agent.run(String(ctx.chat.id), ctx.message.text);
+    await ctx.reply(result.response.slice(0, TELEGRAM_MESSAGE_LIMIT));
   } catch (error) {
     console.error("Agent run failed", error);
     await ctx.reply("Sorry, something went wrong. Please try again later.");
@@ -66,3 +79,18 @@ bot.start({
       `Bot started with ${tools.length} tools and ${skills.length} skills`,
     ),
 });
+
+/** Metrics are best-effort: the bot still runs if the database cannot be opened. */
+function openMetricsStore(): MetricsStore | null {
+  try {
+    const store = new MetricsStore(config.metricsDatabase);
+    store.failStaleRuns();
+    return store;
+  } catch (error) {
+    console.error(
+      `Failed to open the metrics database at ${config.metricsDatabase}; running without metrics`,
+      error,
+    );
+    return null;
+  }
+}

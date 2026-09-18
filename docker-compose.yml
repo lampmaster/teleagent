@@ -1,24 +1,73 @@
+x-agent-image: &agent-image
+  build: .
+  image: teleagent:latest
+  env_file: .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 128
+  # The Qwen3 tokenizer used for token estimates loads a ~250 MB vocabulary.
+  mem_limit: 1g
+
+x-agent-env: &agent-env
+  # Ollama runs on the host, not in these containers.
+  OLLAMA_BASE_URL: http://host.docker.internal:11434
+  CONVERSATIONS_FILE: /app/data/conversations.json
+  METRICS_DB: /app/data/metrics.db
+  FEATURE_FLAGS_FILE: /app/data/feature-flags.json
+  COMPACTION_STATE_FILE: /app/data/compaction-state.json
+  TZ: Europe/Berlin
+
 services:
   teleagent:
-    build: .
-    env_file: .env
+    <<: *agent-image
     environment:
-      # Ollama runs on the host, not in this container.
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-      CONVERSATIONS_FILE: /app/data/conversations.json
-      TZ: Europe/Germany
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      <<: *agent-env
+      # Set by `npm run debug:docker`; otherwise taken from .env, if present.
+      AGENT_DEBUG: ${AGENT_DEBUG:-}
     volumes:
       - ./data:/app/data
       - ./skills:/app/skills:ro
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 128
-    mem_limit: 512m
     restart: unless-stopped
+
+  dashboard:
+    <<: *agent-image
+    command: ["node", "dist/dashboard.js"]
+    environment:
+      <<: *agent-env
+      DASHBOARD_PORT: "8787"
+      BENCHMARK_METRICS_DB: /app/benchmark-data/benchmark.db
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+      # Read-write because SQLite needs to manage its own WAL files.
+      - ./benchmark-data:/app/benchmark-data
+      - ./skills:/app/skills:ro
+    restart: unless-stopped
+
+  # One-shot: `npm run bench:docker -- --configs baseline`.
+  benchmark:
+    <<: *agent-image
+    profiles: ["benchmark"]
+    command: ["node", "dist/benchmark.js"]
+    environment:
+      <<: *agent-env
+      # Isolated from the bot: its own history file, metrics database and flags.
+      BENCHMARK_DATA_DIR: /app/benchmark-data
+      BENCHMARK_METRICS_DB: /app/benchmark-data/benchmark.db
+      BENCHMARK_CONVERSATIONS_FILE: /app/benchmark-data/conversations.json
+      CONVERSATIONS_FILE: /app/benchmark-data/conversations.json
+      METRICS_DB: /app/benchmark-data/benchmark.db
+      FEATURE_FLAGS_FILE: /app/benchmark-data/feature-flags.json
+    volumes:
+      - ./benchmark-data:/app/benchmark-data
+      - ./results:/app/results
+      - ./skills:/app/skills:ro
+    restart: "no"

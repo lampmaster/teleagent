@@ -7,13 +7,21 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
-    "start": "node --env-file=.env dist/main.js",
-    "start:debug": "AGENT_DEBUG=1 node --env-file=.env dist/main.js",
-    "dev": "node --env-file=.env --watch dist/main.js",
-    "typecheck": "tsc --noEmit"
+    "start:docker": "docker compose up -d --build teleagent dashboard",
+    "debug:docker": "AGENT_DEBUG=1 docker compose up -d --build teleagent dashboard && docker compose logs -f teleagent",
+    "logs:docker": "docker compose logs -f teleagent dashboard",
+    "stop:docker": "docker compose down",
+    "bench:docker": "docker compose run --rm benchmark node dist/benchmark.js",
+    "test:docker": "docker compose build teleagent && docker compose run --rm --no-deps benchmark node --test \"dist/**/*.test.js\"",
+    "build:local": "tsc",
+    "start:local": "node --env-file=.env dist/main.js",
+    "debug:local": "AGENT_DEBUG=1 node --env-file=.env dist/main.js",
+    "dashboard:local": "node --env-file=.env dist/dashboard.js",
+    "bench:local": "node --env-file=.env dist/benchmark.js",
+    "test:local": "tsc && node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@lenml/tokenizer-qwen3": "^3.7.2",
     "grammy": "^1.30.1"
   },
   "devDependencies": {
